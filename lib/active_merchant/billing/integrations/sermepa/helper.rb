@@ -60,10 +60,12 @@ module ActiveMerchant #:nodoc:
 
           mapping :transaction_type, 'Ds_Merchant_TransactionType'
 
-          mapping :customer_name, 'Ds_Merchant_Titular' 
+          mapping :customer_name, 'Ds_Merchant_Titular'
 
           #### Special Request Specific Fields ####
-          mapping :signature,   'Ds_Merchant_MerchantSignature'
+          mapping :signature,   'Ds_Signature'
+          mapping :signature_version, 'Ds_SignatureVersion'
+          mapping :merchant_parameters, 'Ds_MerchantParameters'
           ########
 
           # ammount should always be provided in cents!
@@ -120,64 +122,79 @@ module ActiveMerchant #:nodoc:
             @fields
           end
 
+          def merchant_parameters_json
+            {
+              DS_MERCHANT_CURRENCY: @fields['Ds_Merchant_Currency'],
+              DS_MERCHANT_AMOUNT: @fields['Ds_Merchant_Amount'],
+              DS_MERCHANT_TRANSACTIONTYPE: @fields['Ds_Merchant_TransactionType'],
+              DS_MERCHANT_MERCHANTDATA: @fields['Ds_Merchant_Product_Description'] || "",
+              DS_MERCHANT_TERMINAL: "00#{credentials[:terminal_id]}",
+              DS_MERCHANT_MERCHANTCODE: credentials[:commercial_id],
+              DS_MERCHANT_ORDER: @fields['Ds_Merchant_Order'],
+              DS_MERCHANT_MERCHANTURL: @fields['Ds_Merchant_MerchantURL'],
+              DS_MERCHANT_URLOK: @fields['Ds_Merchant_UrlOK'],
+              DS_MERCHANT_URLKO: @fields['Ds_Merchant_UrlKO']
+            }.to_json
+          end
+
+          def merchant_parameters_base64_json
+            Base64.strict_encode64(merchant_parameters_json)
+          end
+
+          # Generate a signature authenticating the current request.
+          # Values included in the signature are determined by the the type of
+          # transaction.
+          def sign_request
+            # By default OpenSSL generates an all-zero array for the encriptation vector
+             # You can read it here: http://ruby-doc.org/stdlib-1.9.3/libdoc/openssl/rdoc/OpenSSL/Cipher.html#method-i-iv-3D
+             # If you want to declare it, you can take a look at the next couple of lines
+             #bytes = Array.new(8,0)
+             #iv = bytes.map(&:chr).join
+             # We need to decode the secret key
+             key = Base64.strict_decode64(credentials[:secret_key])
+             # In thee cipher initialization we need to speficy the encryptation like method-length-mode (http://ruby-doc.org/stdlib-1.9.3/libdoc/openssl/rdoc/OpenSSL/Cipher.html#method-c-new).
+             # Sermepa needs DES3 in CBC mode
+             # The direct way the declare it's: des-ede3-cbc
+             # You can also declare like 'des3' wich use CBC mode by default
+             des3 = OpenSSL::Cipher::Cipher.new('des-ede3-cbc')
+             # OpenSSL use by default PKCS padding. But Sermepa (mcrypt_encrypt PHP function) use zero padding.
+             # OpenSSL do not allow zero padding. So we need to disable the default padding and make zero padding by hand
+             # Padding in cryptography is to fill the data with especial characteres in order to use the data in blocks of N (https://en.wikipedia.org/wiki/Padding_(cryptography))
+             # We need to use blocks of 8 bytes
+             block_length = 8
+             # We tell OpenSSL not to pad
+             des3.padding = 0
+             # We want to encrypt
+             des3.encrypt
+             # Key set
+             des3.key = key
+             #des3.iv = iv
+             order_number = @fields["Ds_Merchant_Order"]
+             # Here is the 'magic'. Instead use the default OpenSSL padding (PKCS). We fill with \0 till the data have
+             # a multiple of the block size (8, 16, 24...)
+             order_number += "\0" until order_number.bytesize % block_length == 0
+             # For example: the string "123456789" will be transform in "123456789\x00\x00\x00\x00\x00\x00\x00"
+             # data must be in blocks of 8 or the update will break
+             key_des3 = des3.update(order_number) + des3.final
+             # The next step is to encrypt in SHA256 the resulting des3 key with the base64 json
+             result = OpenSSL::HMAC.digest('sha256', key_des3, merchant_parameters_base64_json)
+             # The last step is to encode the data in base64
+             Base64.strict_encode64(result)
+          end
 
           # Send a manual request for the currently prepared transaction.
           # This is an alternative to the normal view helper and is useful
           # for special types of transaction.
           def send_transaction
-            body = build_xml_request
+            body = merchant_parameters_base64_json
 
             headers = { }
             headers['Content-Length'] = body.size.to_s
             headers['User-Agent'] = "Active Merchant -- http://activemerchant.org"
             headers['Content-Type'] = 'application/x-www-form-urlencoded'
-  
+
             # Return the raw response data
             ssl_post(Sermepa.operations_url, "entrada="+CGI.escape(body), headers)
-          end
-
-          protected
-
-          def build_xml_request
-            xml = Builder::XmlMarkup.new :indent => 2
-            xml.DATOSENTRADA do
-              xml.DS_Version 0.1
-              xml.DS_MERCHANT_CURRENCY @fields['Ds_Merchant_Currency']
-              xml.DS_MERCHANT_AMOUNT @fields['Ds_Merchant_Amount']
-              xml.DS_MERCHANT_MERCHANTURL @fields['Ds_Merchant_MerchantURL']
-              xml.DS_MERCHANT_TRANSACTIONTYPE @fields['Ds_Merchant_TransactionType']
-              xml.DS_MERCHANT_MERCHANTDATA @fields['Ds_Merchant_Product_Description']
-              xml.DS_MERCHANT_TERMINAL credentials[:terminal_id]
-              xml.DS_MERCHANT_MERCHANTCODE credentials[:commercial_id]
-              xml.DS_MERCHANT_ORDER @fields['Ds_Merchant_Order']
-              xml.DS_MERCHANT_MERCHANTSIGNATURE sign_request
-            end
-            xml.target!
-          end
-
-
-          # Generate a signature authenticating the current request.
-          # Values included in the signature are determined by the the type of 
-          # transaction.
-          def sign_request
-            str = @fields['Ds_Merchant_Amount'].to_s +
-                  @fields['Ds_Merchant_Order'].to_s +
-                  @fields['Ds_Merchant_MerchantCode'].to_s +
-                  @fields['Ds_Merchant_Currency'].to_s
-
-            case Sermepa.transaction_from_code(@fields['Ds_Merchant_TransactionType'])
-            when :recurring_transaction
-              str += @fields['Ds_Merchant_SumTotal']
-            end
-
-            if credentials[:key_type].blank? || credentials[:key_type] == 'sha1_extended'
-              str += @fields['Ds_Merchant_TransactionType'].to_s +
-                     @fields['Ds_Merchant_MerchantURL'].to_s # may be blank!
-            end
-
-            str += credentials[:secret_key]
-
-            Digest::SHA1.hexdigest(str)
           end
 
         end

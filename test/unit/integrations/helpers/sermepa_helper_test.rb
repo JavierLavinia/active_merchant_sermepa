@@ -62,12 +62,4 @@ class SermepaHelperTest < Test::Unit::TestCase
     assert_equal "ca2bd747d365b4f0a87c670b270cc390b79670ce", sig
   end
 
-  def test_build_xml_confirmation_request
-    # This also tests signing the request for differnet transactions
-    data = @helper.send(:build_xml_request)
-    assert data =~ /<DS_MERCHANT_TRANSACTIONTYPE>0<\/DS_MERCHANT_TRANSACTIONTYPE>/
-    assert data =~ /<DS_MERCHANT_MERCHANTCODE>999008881<\/DS_MERCHANT_MERCHANTCODE>/
-    assert data =~ /<DS_MERCHANT_MERCHANTSIGNATURE>ca2bd747d365b4f0a87c670b270cc390b79670ce<\/DS_MERCHANT_MERCHANTSIGNATURE>/
-  end
-
 end
