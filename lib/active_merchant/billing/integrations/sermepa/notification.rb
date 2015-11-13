@@ -88,19 +88,31 @@ module ActiveMerchant #:nodoc:
           #
           def acknowledge(credentials = nil)
             return false if params['ds_signature'].blank?
-            str = 
-              params['ds_amount'].to_s +
-              params['ds_order'].to_s +
-              params['ds_merchantcode'].to_s + 
-              params['ds_currency'].to_s +
-              params['ds_response'].to_s
-            if xml?
-              str += params['ds_transactiontype'].to_s + params['ds_securepayment'].to_s
-            end
+            # The DES3-CBC key generation it's the same that in helper.rb
+            # You can take a look at the explanation
+            secret_key = (credentials || Sermepa::Helper.credentials)[:secret_key]
+            secret_key_base64 = Base64.strict_decode64(secret_key)
 
-            str += (credentials || Sermepa::Helper.credentials)[:secret_key]
-            sig = Digest::SHA1.hexdigest(str)
-            sig.upcase == params['ds_signature'].to_s.upcase
+            des3 = OpenSSL::Cipher::Cipher.new('des-ede3-cbc')
+            block_length = 8
+            des3.padding = 0
+            des3.encrypt
+            des3.key = secret_key_base64
+            order_number = params["ds_order"]
+            order_number += "\0" until order_number.bytesize % block_length == 0
+            key_des3 = des3.update(order_number) + des3.final
+
+            # params["ds_merchantparameters"] it's the merchant parameters json in base64
+            # So, we don't need to encrypt again. We can use it directly :)
+            result = OpenSSL::HMAC.digest('sha256', key_des3, params["ds_merchantparameters"])
+
+            # Here is the new 'magic' for Sermepa
+            # We MUST replace '+' with '-'
+            # We MUST replace '/' with '_'
+            # Maybe they use this signature in some GET route, or something like that
+            # And they return it with this characters replaced
+            sig = Base64.strict_encode64(result).gsub("+", "-").gsub("/", "_")
+            sig == params['ds_signature'].to_s
           end
 
           private
