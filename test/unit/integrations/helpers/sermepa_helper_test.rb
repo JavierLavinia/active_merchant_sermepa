@@ -12,7 +12,7 @@ class SermepaHelperTest < Test::Unit::TestCase
     @helper = Sermepa::Helper.new('070803113316', 'Comercio Pruebas', :amount => 825, :currency => 'EUR')
     @helper.description = "Alfombrilla para raton"
     @helper.customer_name = "Sermepa"
-    @helper.notify_url = "https://sis-t.sermepa.es:25443/sis/pruebaCom.jsp"
+    @helper.notify_url = "https://sis-t.redsys.es:25443/sis/pruebaCom.jsp"
   end
 
   def test_credentials_accessible
